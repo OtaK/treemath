@@ -11,3 +11,6 @@ coverage
 modules.xml
 .idea/misc.xml
 *.ipr
+.idea/*
+
+Cargo.lock
