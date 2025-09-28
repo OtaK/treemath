@@ -19,6 +19,6 @@ impl arbitrary::Arbitrary<'_> for Input {
 }
 
 libfuzzer_sys::fuzz_target!(|input: Input| {
-    treemath::parent_unchecked(input.node_index_constrained, input.leaf_count_constrained);
-    treemath::parent(input.node_index_unconstrained, input.leaf_count_unconstrained);
+    treemath::sibling_unchecked(input.node_index_constrained, input.leaf_count_constrained);
+    treemath::sibling(input.node_index_unconstrained, input.leaf_count_unconstrained);
 });
