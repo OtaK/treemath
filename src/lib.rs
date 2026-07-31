@@ -1,309 +1,278 @@
-use crate::bounds::{LEAF_COUNT_MAX, LEVEL_MAX, NODE_INDEX_MAX};
-use std::collections::VecDeque;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct NodeIndex(pub usize);
 
-/// Returns the height of that node in the tree
-#[inline(always)]
-pub const fn level(node_index: u32) -> u8 {
-    node_index.trailing_ones() as u8
+impl NodeIndex {
+    #[inline(always)]
+    pub const fn is_leaf(&self) -> bool {
+        ops::is_leaf(self.0)
+    }
+
+    #[inline(always)]
+    pub const fn level(&self) -> u8 {
+        ops::level(self.0)
+    }
+
+    #[inline(always)]
+    pub const fn left(&self) -> Option<Self> {
+        let Some(left_index) = ops::left(self.0) else {
+            return None;
+        };
+
+        Some(Self(left_index))
+    }
+
+    #[inline(always)]
+    pub const fn right(&self) -> Option<Self> {
+        let Some(right_index) = ops::right(self.0) else {
+            return None;
+        };
+
+        Some(Self(right_index))
+    }
+
+    #[inline(always)]
+    pub const fn children(&self) -> Option<(Self, Self)> {
+        let Some((left_index, right_index)) = ops::children(self.0) else {
+            return None;
+        };
+
+        Some((Self(left_index), Self(right_index)))
+    }
+
+    #[inline(always)]
+    pub const fn common_ancestor(&self, other: &Self) -> Self {
+        Self(ops::common_ancestor(self.0, other.0))
+    }
+
+    #[inline(always)]
+    pub const fn parent(&self, subroot_idx: &Self) -> Option<Self> {
+        let Some(parent) = ops::parent_unchecked(self.0, subroot_idx.0) else {
+            return None;
+        };
+
+        Some(Self(parent))
+    }
+
+    #[inline(always)]
+    pub const fn to_leaf_index(&self) -> Option<LeafIndex> {
+        if !self.is_leaf() {
+            return None;
+        }
+
+        Some(LeafIndex((self.0 / 2) as u32))
+    }
+
+    #[inline(always)]
+    pub const fn from_leaf_index(leaf_index: LeafIndex) -> Self {
+        Self((leaf_index.0 as usize) * 2)
+    }
+
+    #[inline(always)]
+    pub const fn sibling(&self, leaf_count: usize) -> Option<Self> {
+        let Some(sibling_index) = ops::sibling(self.0, leaf_count) else {
+            return None;
+        };
+        Some(Self(sibling_index))
+    }
 }
 
-/// Returns the root node
-#[inline(always)]
-pub const fn root(leaf_count: u32) -> u32 {
-    // leaf_count.wrapping_sub(1); // works only in case leaf_count is a power of 2
-    if leaf_count == 0 {
-        return 0;
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct LeafIndex(pub u32);
+
+impl From<LeafIndex> for NodeIndex {
+    #[inline]
+    fn from(value: LeafIndex) -> Self {
+        Self::from_leaf_index(value)
     }
-    let shl = node_width(leaf_count).ilog2();
-    let pow2: u32 = 1 << shl;
-    pow2.wrapping_sub(1)
 }
 
-/// Number of nodes needed to represent a tree with [leaf_count] leaves.
-#[inline(always)]
-pub const fn node_width(leaf_count: u32) -> u32 {
-    if leaf_count == 0 {
-        return 0;
+pub mod ops {
+    /// Returns the height of that node in the tree
+    #[inline(always)]
+    pub const fn level(node_index: usize) -> u8 {
+        node_index.trailing_ones() as u8
     }
-    // 2*(n - 1) + 1
-    leaf_count
+
+    /// Returns the root node
+    #[inline(always)]
+    pub const fn root(leaf_count: usize) -> usize {
+        let nw = node_width(leaf_count);
+        if nw == 0 {
+            return 0;
+        }
+        (1usize << (nw.ilog2())).saturating_sub(1)
+    }
+
+    #[inline(always)]
+    pub const fn is_leaf(node_index: usize) -> bool {
+        node_index.is_multiple_of(2)
+    }
+
+    /// Number of nodes needed to represent a tree with [leaf_count] leaves.
+    #[inline(always)]
+    pub const fn node_width(leaf_count: usize) -> usize {
+        if leaf_count == 0 {
+            return 0;
+        }
+
+        // 2*(n - 1) + 1
+        (leaf_count as usize)
         .wrapping_sub(1) // since leaf_count is >= 1
         .saturating_mul(2)
         .saturating_add(1)
-}
-
-/// Get the parent of a node, return [None] if the node is the root
-#[inline(always)]
-pub const fn parent_unchecked(node_index: u32, leaf_count: u32) -> Option<u32> {
-    if node_index == root(leaf_count) {
-        return None;
-    }
-    Some((bits::last_zero_bit(node_index) | node_index) & !bits::last_zero_bit(node_index).wrapping_shl(1))
-}
-
-/// Get the parent of a node, return [None] if the node is the root
-#[inline(always)]
-pub const fn parent(node_index: u32, leaf_count: u32) -> Option<u32> {
-    if leaf_count > LEAF_COUNT_MAX || node_index > (leaf_count.saturating_sub(1) * 2) {
-        return None;
-    }
-    parent_unchecked(node_index, leaf_count)
-}
-
-/// Given a node, return the left/right child of his parent, return [None] when root
-#[inline(always)]
-pub const fn sibling_unchecked(node_index: u32, leaf_count: u32) -> Option<u32> {
-    let Some(parent) = parent_unchecked(node_index, leaf_count) else {
-        return None;
-    };
-    let parent = parent as isize;
-    let d = parent.overflowing_sub(node_index as isize).0;
-    let sibling = parent.overflowing_add(d).0;
-    Some(sibling as u32)
-}
-
-/// Given a node, return the left/right child of his parent, return [None] when root
-#[inline(always)]
-pub const fn sibling(node_index: u32, leaf_count: u32) -> Option<u32> {
-    if leaf_count > LEAF_COUNT_MAX || node_index > (leaf_count.saturating_sub(1) * 2) {
-        return None;
-    }
-    sibling_unchecked(node_index, leaf_count)
-}
-
-#[inline(always)]
-pub const fn left_unchecked(node_index: u32) -> Option<u32> {
-    if node_index.is_multiple_of(2) {
-        return None;
-    }
-    let lzb = bits::last_zero_bit(node_index);
-    let left = node_index & !lzb.wrapping_shr(1);
-    Some(left)
-}
-
-#[inline(always)]
-pub const fn right_unchecked(node_index: u32) -> Option<u32> {
-    if node_index.is_multiple_of(2) {
-        return None;
-    }
-    let lzb = bits::last_zero_bit(node_index);
-    let right = (node_index | lzb) & !lzb.wrapping_shr(1);
-    Some(right)
-}
-
-#[inline(always)]
-pub const fn left(node_index: u32) -> Option<u32> {
-    if node_index > NODE_INDEX_MAX {
-        return None;
-    }
-    left_unchecked(node_index)
-}
-
-#[inline(always)]
-pub const fn right(node_index: u32) -> Option<u32> {
-    if node_index > NODE_INDEX_MAX {
-        return None;
-    }
-    right_unchecked(node_index)
-}
-
-/// Returns (left, right)
-#[inline(always)]
-pub const fn children(node_index: u32) -> Option<(u32, u32)> {
-    if node_index.is_multiple_of(2) {
-        return None;
-    }
-    let lzb = bits::last_zero_bit(node_index);
-    let mask = !lzb.wrapping_shr(1);
-
-    let left = node_index & mask;
-    let right = (node_index | lzb) & mask;
-
-    Some((left, right))
-}
-
-pub fn direct_path_unchecked(node_index: u32, leaf_count: u32) -> Option<Vec<u32>> {
-    __direct_path_unchecked(node_index, leaf_count).map(|(a, size)| a[..size].to_vec())
-}
-
-fn __direct_path_unchecked(node_index: u32, leaf_count: u32) -> Option<([u32; 32], usize)> {
-    // see https://mmapped.blog/posts/22-flat-in-order-trees.html#sec-addressing
-    let mut root = root(leaf_count);
-    if node_index == root {
-        return None;
     }
 
-    let mut root_level = level(root);
-
-    let floor = LEVEL_MAX.wrapping_sub(root_level);
-    let node_level = level(node_index);
-    let path_size = root_level.wrapping_sub(node_level) as usize;
-    let mut path = [0u32; 32];
-    let chunk_size = path_size.wrapping_sub(1);
-
-    path[chunk_size] = root;
-
-    let mask = u32::MAX >> floor;
-    let chunk = node_index & mask;
-
-    for i in 0..chunk_size {
-        let d = ((chunk >> root_level) & 1) == 0;
-        root = child_with_direction(root, d, root_level);
-        root_level = root_level.wrapping_sub(1);
-        let idx = chunk_size.wrapping_sub(1) - i;
-        path[idx] = root;
+    #[inline(always)]
+    const fn parent_from_idx(node_index: usize) -> usize {
+        let lzb = crate::bits::last_zero_bit(node_index);
+        (lzb | node_index) & !lzb.wrapping_shl(1)
     }
 
-    Some((path, path_size))
-}
-
-pub fn direct_path(node_index: u32, leaf_count: u32) -> Option<Vec<u32>> {
-    if leaf_count > LEAF_COUNT_MAX || node_index > (leaf_count.saturating_sub(1) * 2) {
-        return None;
-    }
-    direct_path_unchecked(node_index, leaf_count)
-}
-
-#[inline(always)]
-pub const fn child_with_direction(node_index: u32, direction: bool, level: u8) -> u32 {
-    let f = 2u32 ^ (1u32.wrapping_shl(direction as u32) | 1);
-    let lvl = level.wrapping_sub(1);
-    let f = f.wrapping_shl(lvl as u32);
-    node_index ^ f
-}
-
-#[inline(always)]
-const fn nephew(node_index: u32, is_left: bool, leaf_count: u32, mut level: u8) -> Option<u32> {
-    if level < 1 {
-        return None;
-    }
-    let Some(parent) = parent_unchecked(node_index, leaf_count) else {
-        return None;
-    };
-    level = level.wrapping_add(1);
-    let sibling = child_with_direction(parent, node_index > parent, level);
-    level = level.wrapping_sub(1);
-    let nephew = child_with_direction(sibling, is_left, level);
-    Some(nephew)
-}
-
-pub fn copath_unchecked(node_index: u32, leaf_count: u32) -> Option<VecDeque<u32>> {
-    // see https://mmapped.blog/posts/22-flat-in-order-trees.html#sec-addressing
-    let mut root = root(leaf_count);
-    if node_index == root {
-        return None;
+    /// Get the parent of a node, return [None] if the node is the root
+    #[inline(always)]
+    pub const fn parent_unchecked(node_index: usize, root_index: usize) -> Option<usize> {
+        if node_index == root_index {
+            return None;
+        }
+        Some(parent_from_idx(node_index))
     }
 
-    let mut root_level = level(root);
+    /// Get the parent of a node, return [None] if the node is the root
+    #[inline(always)]
+    pub const fn parent(node_index: usize, leaf_count: usize) -> Option<usize> {
+        if node_index > ((leaf_count as usize).saturating_sub(1) * 2) {
+            return None;
+        }
+        parent_unchecked(node_index, root(leaf_count))
+    }
 
-    let floor = LEVEL_MAX.wrapping_sub(root_level);
-    let node_level = level(node_index);
-    let path_size = root_level.wrapping_sub(node_level).wrapping_sub(1);
-    let mut copath = VecDeque::with_capacity(path_size as usize);
-
-    let mask = u32::MAX >> floor;
-    let chunk = node_index & mask;
-
-    let b = ((chunk >> root_level) & 1) == 0;
-    root = child_with_direction(root, !b, root_level);
-    root_level = root_level.wrapping_sub(1);
-    copath.push_front(root);
-
-    for _ in 0..path_size {
-        let b = ((chunk >> root_level) & 1) == 0;
-
-        let Some(nephew) = nephew(root, !b, leaf_count, root_level) else {
-            // should never happen because we should bail before the leaf if we compute the path_size right
-            return Some(copath);
+    /// Given a node, return the left/right child of his parent, return [None] when root
+    #[inline(always)]
+    pub const fn sibling_unchecked(node_index: usize, leaf_count: usize) -> Option<usize> {
+        let Some(parent) = parent_unchecked(node_index, root(leaf_count)) else {
+            return None;
         };
-
-        root = nephew;
-        root_level = root_level.wrapping_sub(1);
-        copath.push_front(root);
+        let parent = parent as isize;
+        let d = parent.overflowing_sub(node_index as isize).0;
+        let sibling = parent.overflowing_add(d).0;
+        Some(sibling as usize)
     }
 
-    Some(copath)
-}
-
-pub fn copath(node_index: u32, leaf_count: u32) -> Option<VecDeque<u32>> {
-    if leaf_count > LEAF_COUNT_MAX || node_index > (leaf_count.saturating_sub(1) * 2) {
-        return None;
+    /// Given a node, return the left/right child of his parent, return [None] when root
+    #[inline(always)]
+    pub const fn sibling(node_index: usize, leaf_count: usize) -> Option<usize> {
+        if node_index > ((leaf_count as usize).saturating_sub(1) * 2) {
+            return None;
+        }
+        sibling_unchecked(node_index, leaf_count)
     }
-    copath_unchecked(node_index, leaf_count)
-}
 
-#[inline(always)]
-pub const fn common_ancestor_unchecked(node_index: u32, other: u32) -> u32 {
-    if node_index == other {
-        return node_index;
+    #[inline(always)]
+    pub const fn left(node_index: usize) -> Option<usize> {
+        if is_leaf(node_index) {
+            return None;
+        }
+        let lzb = crate::bits::last_zero_bit(node_index);
+        let left = node_index & !lzb.wrapping_shr(1);
+        Some(left)
     }
-    let d = bits::most_significant_bit(node_index ^ other);
-    (node_index & !d) | (d.wrapping_sub(1))
-}
 
-#[inline(always)]
-pub const fn common_ancestor(node_index: u32, other: u32) -> u32 {
-    if node_index > NODE_INDEX_MAX || other > NODE_INDEX_MAX {
-        return node_index;
+    #[inline(always)]
+    pub const fn right(node_index: usize) -> Option<usize> {
+        if is_leaf(node_index) {
+            return None;
+        }
+        let lzb = crate::bits::last_zero_bit(node_index);
+        let right = (node_index | lzb) & !lzb.wrapping_shr(1);
+        Some(right)
     }
-    common_ancestor_unchecked(node_index, other)
+
+    /// Returns (left, right)
+    #[inline(always)]
+    pub const fn children(node_index: usize) -> Option<(usize, usize)> {
+        if is_leaf(node_index) {
+            return None;
+        }
+
+        let lzb = crate::bits::last_zero_bit(node_index);
+        let mask = !lzb.wrapping_shr(1);
+        let left = node_index & mask;
+        let right = (node_index | lzb) & mask;
+
+        Some((left, right))
+    }
+
+    pub fn direct_path_to_subroot(mut node_index: usize, subroot_idx: usize) -> Option<impl Iterator<Item = usize>> {
+        if subroot_idx == node_index {
+            return None;
+        }
+
+        Some(std::iter::from_fn(move || {
+            node_index = parent_unchecked(node_index, subroot_idx)?;
+            Some(node_index)
+        }))
+    }
+
+    #[inline(always)]
+    pub fn direct_path_unchecked(node_index: usize, leaf_count: usize) -> Option<impl Iterator<Item = usize>> {
+        direct_path_to_subroot(node_index, root(leaf_count))
+    }
+
+    pub fn direct_path(node_index: usize, leaf_count: usize) -> Option<impl Iterator<Item = usize>> {
+        if node_index > ((leaf_count as usize).saturating_sub(1) * 2) {
+            return None;
+        }
+        direct_path_unchecked(node_index, leaf_count)
+    }
+
+    #[inline(always)]
+    pub const fn child_with_direction(node_index: usize, direction: bool, level: u8) -> usize {
+        let f = 2 ^ (1usize.wrapping_shl(direction as u32) | 1);
+        let lvl = level.wrapping_sub(1);
+        let f = f.wrapping_shl(lvl as u32);
+        node_index ^ f
+    }
+
+    #[inline(always)]
+    pub fn copath_unchecked(node_index: usize, leaf_count: usize) -> Option<impl Iterator<Item = usize>> {
+        direct_path_unchecked(node_index, leaf_count).map(|dp_iter| core::iter::once(node_index).chain(dp_iter).filter_map(move |idx| sibling(idx, leaf_count)))
+    }
+
+    #[inline(always)]
+    pub fn copath(node_index: usize, leaf_count: usize) -> Option<impl Iterator<Item = usize>> {
+        if node_index > ((leaf_count as usize).saturating_sub(1) * 2) {
+            return None;
+        }
+        copath_unchecked(node_index, leaf_count)
+    }
+
+    #[inline(always)]
+    pub const fn common_ancestor(node_index: usize, other: usize) -> usize {
+        if node_index == other {
+            return node_index;
+        }
+        let d = (node_index ^ other).isolate_highest_one();
+        (node_index & !d) | (d.wrapping_sub(1))
+    }
 }
 
 mod bits {
     #[inline(always)]
-    pub const fn last_set_bit(n: u32) -> u32 {
+    pub const fn last_set_bit(n: usize) -> usize {
         n.wrapping_sub(n.wrapping_sub(1) & n)
     }
 
     #[inline(always)]
-    pub const fn last_zero_bit(n: u32) -> u32 {
+    pub const fn last_zero_bit(n: usize) -> usize {
         last_set_bit(n + 1)
-    }
-
-    #[inline(always)]
-    pub const fn most_significant_bit(mut n: u32) -> u32 {
-        n |= n.wrapping_shr(1);
-        n |= n.wrapping_shr(2);
-        n |= n.wrapping_shr(4);
-        n |= n.wrapping_shr(8);
-        n |= n.wrapping_shr(16);
-        n - n.wrapping_shr(1)
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub const fn round_up_power_2(mut n: u32) -> u32 {
-        n -= 1;
-        n |= n.wrapping_shr(1);
-        n |= n.wrapping_shr(2);
-        n |= n.wrapping_shr(4);
-        n |= n.wrapping_shr(8);
-        n |= n.wrapping_shr(16);
-        n |= n.wrapping_shr(32);
-        n += 1;
-        n
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn msb_should_succeed() {
-            assert_eq!(1, most_significant_bit(1));
-            assert_eq!(2, most_significant_bit(2));
-            assert_eq!(2, most_significant_bit(3));
-            assert_eq!(4, most_significant_bit(4));
-            assert_eq!(4, most_significant_bit(5));
-            assert_eq!(4, most_significant_bit(6));
-            assert_eq!(1 << 31, most_significant_bit(u32::MAX));
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bounds::*, naive::*, *};
+    use super::{bounds::*, naive::*};
     use itertools::*;
 
     mod level {
@@ -311,15 +280,15 @@ mod tests {
 
         #[test]
         fn should_succeed() {
-            for i in 0u32..100_000 {
-                assert_eq!(level(i) as u32, level_naive(i), "failed for node index {}", i);
+            for i in 0usize..100_000 {
+                assert_eq!(crate::ops::level(i) as u32, level_naive(i), "failed for node index {}", i);
             }
         }
 
         #[test]
         fn should_succeed_at_boundaries() {
-            assert_eq!(level(NODE_INDEX_MAX) as u32, level_naive(NODE_INDEX_MAX));
-            assert_eq!(level(0) as u32, level_naive(0));
+            assert_eq!(crate::ops::level(NODE_INDEX_MAX as usize) as u32, level_naive(NODE_INDEX_MAX as usize));
+            assert_eq!(crate::ops::level(0) as u32, level_naive(0));
         }
     }
 
@@ -329,17 +298,17 @@ mod tests {
         #[test]
         fn should_succeed() {
             for lc in leaf_count_range() {
-                assert_eq!(root(lc), root_naive(lc));
-                assert_eq!(root(lc), lc - 1);
+                assert_eq!(crate::ops::root(lc), root_naive(lc));
+                assert_eq!(crate::ops::root(lc), lc as usize - 1);
             }
         }
 
         #[test]
         fn should_succeed_at_boundaries() {
-            assert_eq!(root(0), root_naive(0));
-            assert_eq!(root(0), 0);
-            assert_eq!(root(LEAF_COUNT_MAX), root_naive(LEAF_COUNT_MAX));
-            assert_eq!(root(LEAF_COUNT_MAX), ROOT_MAX);
+            assert_eq!(crate::ops::root(0), root_naive(0));
+            assert_eq!(crate::ops::root(0), 0);
+            assert_eq!(crate::ops::root(LEAF_COUNT_MAX), root_naive(LEAF_COUNT_MAX));
+            assert_eq!(crate::ops::root(LEAF_COUNT_MAX), ROOT_MAX);
         }
     }
 
@@ -348,15 +317,15 @@ mod tests {
 
         #[test]
         fn should_succeed() {
-            assert_eq!(node_width(1), 1);
-            assert_eq!(node_width(2), 3);
+            assert_eq!(crate::ops::node_width(1), 1);
+            assert_eq!(crate::ops::node_width(2), 3);
         }
 
         #[test]
         fn should_succeed_at_boundaries() {
-            assert_eq!(node_width(0), 0);
-            assert_eq!(node_width(LEAF_COUNT_MAX), NODE_WIDTH_MAX);
-            assert_eq!(node_width(u32::MAX), NODE_WIDTH_MAX);
+            assert_eq!(crate::ops::node_width(0), 0);
+            assert_eq!(crate::ops::node_width(LEAF_COUNT_MAX), NODE_WIDTH_MAX);
+            assert_eq!(crate::ops::node_width(usize::MAX), NODE_WIDTH_MAX);
         }
     }
 
@@ -366,7 +335,7 @@ mod tests {
         #[test]
         fn should_fail_when_root() {
             for (r, lc) in root_range() {
-                assert!(parent_unchecked(r, lc).is_none());
+                assert!(crate::ops::parent_unchecked(r, crate::ops::root(lc)).is_none());
                 assert!(parent_naive(r, lc).is_none());
             }
         }
@@ -374,38 +343,43 @@ mod tests {
         #[test]
         fn should_succeed_for_leaves() {
             let lc = LEAF_COUNT_MAX;
-            for left_leaf in (0..=u16::MAX).step_by(4) {
-                assert_eq!(parent_unchecked(left_leaf as u32, lc), parent_naive(left_leaf as u32, lc));
-                assert_eq!(parent_unchecked(left_leaf as u32, lc), Some(left_leaf as u32 + 1));
+            for left_leaf in (0..=u16::MAX as usize).step_by(4) {
+                assert_eq!(crate::ops::parent_unchecked(left_leaf, lc), parent_naive(left_leaf, lc));
+                assert_eq!(crate::ops::parent_unchecked(left_leaf, lc), Some(left_leaf + 1));
             }
-            for right_leaf in (2..=u16::MAX).step_by(4) {
-                assert_eq!(parent_unchecked(right_leaf as u32, lc), parent_naive(right_leaf as u32, lc));
-                assert_eq!(parent_unchecked(right_leaf as u32, lc), Some(right_leaf as u32 - 1));
+            for right_leaf in (2..=u16::MAX as usize).step_by(4) {
+                assert_eq!(crate::ops::parent_unchecked(right_leaf, lc), parent_naive(right_leaf, lc));
+                assert_eq!(crate::ops::parent_unchecked(right_leaf, lc), Some(right_leaf - 1));
             }
         }
 
         #[test]
         fn should_succeed_at_boundaries() {
-            assert!(parent_unchecked(NODE_INDEX_MAX, LEAF_COUNT_MAX).is_some());
-            assert_eq!(parent_unchecked(NODE_INDEX_MAX, LEAF_COUNT_MAX), parent_naive(NODE_INDEX_MAX, LEAF_COUNT_MAX));
+            assert!(crate::ops::parent_unchecked(NODE_INDEX_MAX, LEAF_COUNT_MAX).is_some());
+            assert_eq!(crate::ops::parent_unchecked(NODE_INDEX_MAX, LEAF_COUNT_MAX), parent_naive(NODE_INDEX_MAX, LEAF_COUNT_MAX));
         }
     }
 
     mod direct_path {
+        use std::collections::VecDeque;
+
         use super::*;
 
         #[test]
         fn should_succeed() {
             for (lc, i) in leaf_count_range_with_node_index().take(100_000) {
-                assert_eq!(direct_path_unchecked(i, lc), direct_path_naive(i, lc).map(|v| v.into_iter().collect::<Vec<_>>()));
+                assert_eq!(
+                    crate::ops::direct_path_unchecked(i, lc).map(|iter| iter.collect()),
+                    direct_path_naive(i, lc).map(|v| v.into_iter().collect::<Vec<_>>())
+                );
             }
         }
 
         #[test]
         fn should_succeed_for_remarkable_values() {
-            let lc = 8u32;
+            let lc = 8usize;
             let values = [
-                (0u32, vec![1u32, 3, 7]),
+                (0usize, vec![1usize, 3, 7]),
                 (1, vec![3, 7]),
                 (2, vec![1, 3, 7]),
                 (3, vec![7]),
@@ -422,8 +396,14 @@ mod tests {
             ]
             .map(|(i, e)| (i, VecDeque::from_iter(e)));
             for (i, expected) in values {
-                assert_eq!(direct_path_unchecked(i, lc), direct_path_naive(i, lc).map(|v| v.into_iter().collect::<Vec<_>>()));
-                assert_eq!(direct_path_unchecked(i, lc), Some(expected.into_iter().collect()));
+                assert_eq!(
+                    crate::ops::direct_path_unchecked(i, lc).map(|iter| iter.collect()),
+                    direct_path_naive(i, lc).map(|v| v.into_iter().collect::<Vec<_>>())
+                );
+                assert_eq!(
+                    crate::ops::direct_path_unchecked(i, lc).map(|iter| iter.collect::<Vec<_>>()),
+                    Some(expected.into_iter().collect())
+                );
             }
         }
 
@@ -438,34 +418,42 @@ mod tests {
                 (NODE_INDEX_MAX, LEAF_COUNT_MAX),
             ];
             for (i, lc) in values {
-                assert_eq!(direct_path_unchecked(i, lc), direct_path_naive(i, lc).map(|v| v.into_iter().collect::<Vec<_>>()));
+                assert_eq!(
+                    crate::ops::direct_path_unchecked(i, lc).map(|iter| iter.collect()),
+                    direct_path_naive(i, lc).map(|v| v.into_iter().collect::<Vec<_>>())
+                );
             }
         }
 
         #[test]
         fn should_fail_for_roots() {
             for (r, lc) in root_range() {
-                assert!(direct_path_unchecked(r, lc).is_none());
-                assert_eq!(direct_path_unchecked(r, lc), direct_path_naive(r, lc).map(|v| v.into_iter().collect::<Vec<_>>()));
+                assert!(crate::ops::direct_path_unchecked(r, lc).is_none());
+                assert_eq!(
+                    crate::ops::direct_path_unchecked(r, lc).map(|iter| iter.collect()),
+                    direct_path_naive(r, lc).map(|v| v.into_iter().collect::<Vec<_>>())
+                );
             }
         }
     }
 
     mod copath {
+        use std::collections::VecDeque;
+
         use super::*;
 
         #[test]
         fn should_succeed() {
             for (lc, i) in leaf_count_range_with_node_index().take(10) {
-                assert_eq!(copath_unchecked(i, lc), copath_naive(i, lc));
+                assert_eq!(crate::ops::copath_unchecked(i, lc).map(|iter| iter.collect()), copath_naive(i, lc));
             }
         }
 
         #[test]
         fn should_succeed_for_remarkable_values() {
-            let lc = 8u32;
+            let lc = 8usize;
             let values = [
-                (0u32, vec![2u32, 5, 11]),
+                (0usize, vec![2usize, 5, 11]),
                 (1, vec![5, 11]),
                 (2, vec![0, 5, 11]),
                 (3, vec![11]),
@@ -482,8 +470,8 @@ mod tests {
             ]
             .map(|(i, e)| (i, VecDeque::from_iter(e)));
             for (i, expected) in values {
-                assert_eq!(copath_unchecked(i, lc), copath_naive(i, lc));
-                assert_eq!(copath_unchecked(i, lc), Some(expected));
+                assert_eq!(crate::ops::copath_unchecked(i, lc).map(|iter| iter.collect()), copath_naive(i, lc));
+                assert_eq!(crate::ops::copath_unchecked(i, lc).map(|iter| iter.collect()), Some(expected));
             }
         }
 
@@ -498,15 +486,15 @@ mod tests {
                 (NODE_INDEX_MAX, LEAF_COUNT_MAX),
             ];
             for (i, lc) in values {
-                assert_eq!(copath_unchecked(i, lc), copath_naive(i, lc));
+                assert_eq!(crate::ops::copath_unchecked(i, lc).map(|iter| iter.collect()), copath_naive(i, lc));
             }
         }
 
         #[test]
         fn should_fail_for_roots() {
             for (r, lc) in root_range() {
-                assert!(copath_unchecked(r, lc).is_none());
-                assert_eq!(copath_unchecked(r, lc), copath_naive(r, lc));
+                assert!(crate::ops::copath_unchecked(r, lc).is_none());
+                assert_eq!(crate::ops::copath_unchecked(r, lc).map(|iter| iter.collect()), copath_naive(r, lc));
             }
         }
     }
@@ -519,20 +507,20 @@ mod tests {
             let e = 10;
             for a in level_range(0).take(1 << e) {
                 for b in level_range(0).take(1 << e) {
-                    assert_eq!(common_ancestor_unchecked(a, b), common_ancestor_naive(a, b));
+                    assert_eq!(crate::ops::common_ancestor(a, b), common_ancestor_naive(a, b));
                 }
             }
         }
 
         #[test]
         fn should_succeed_at_boundaries() {
-            let values = [(0, 2), (0, NODE_INDEX_MAX)];
+            let values = [(0usize, 2), (0, NODE_INDEX_MAX as usize)];
             for (a, b) in values {
-                assert_eq!(common_ancestor_unchecked(a, b), common_ancestor_naive(a, b));
+                assert_eq!(crate::ops::common_ancestor(a, b), common_ancestor_naive(a, b));
             }
         }
 
-        fn level_range(level: u32) -> impl Iterator<Item = u32> {
+        fn level_range(level: u32) -> impl Iterator<Item = usize> {
             let lower = (1 << level) - 1;
             let step = 1 << (level + 1);
             (lower..=NODE_INDEX_MAX).step_by(step).dedup()
@@ -544,43 +532,43 @@ mod tests {
 
         #[test]
         fn should_succeed() {
-            for node_index in (0..NODE_INDEX_MAX).step_by(100) {
-                assert_eq!(left_unchecked(node_index), left_naive(node_index));
-                assert_eq!(right_unchecked(node_index), right_naive(node_index));
+            for node_index in (0..u32::MAX as usize).step_by(100) {
+                assert_eq!(crate::ops::left(node_index), left_naive(node_index));
+                assert_eq!(crate::ops::right(node_index), right_naive(node_index));
             }
         }
 
         #[test]
         fn should_succeed_at_boundaries() {
-            let values = [0, 1, NODE_INDEX_MAX - 1, NODE_INDEX_MAX];
+            let values = [0, 1, NODE_INDEX_MAX as usize - 1, NODE_INDEX_MAX as usize];
             for node_index in values {
-                assert_eq!(left_unchecked(node_index), left_naive(node_index));
-                assert_eq!(right_unchecked(node_index), right_naive(node_index));
+                assert_eq!(crate::ops::left(node_index), left_naive(node_index));
+                assert_eq!(crate::ops::right(node_index), right_naive(node_index));
             }
         }
     }
 }
 
 pub mod bounds {
-    pub const NODE_INDEX_MAX: u32 = u32::MAX - 1;
-    pub const LEAF_COUNT_MAX: u32 = (NODE_INDEX_MAX / 2) + 1;
-    pub const NODE_WIDTH_MAX: u32 = (LEAF_COUNT_MAX - 1) * 2 + 1;
-    pub const ROOT_MAX: u32 = LEAF_COUNT_MAX - 1;
-    pub const LEVEL_MAX: u8 = u32::BITS as u8 - 1;
+    pub const NODE_INDEX_MAX: usize = usize::MAX - 1;
+    pub const LEAF_COUNT_MAX: usize = (NODE_INDEX_MAX / 2) + 1;
+    pub const NODE_WIDTH_MAX: usize = (LEAF_COUNT_MAX - 1) * 2 + 1;
+    pub const ROOT_MAX: usize = LEAF_COUNT_MAX - 1;
+    pub const LEVEL_MAX: u8 = usize::BITS as u8 - 1;
 
-    pub const LEAF_COUNT_BITS: u32 = 31;
-    pub const ROOT_BITS: u32 = 31;
+    pub const LEAF_COUNT_BITS: u32 = usize::BITS - 1;
+    pub const ROOT_BITS: u32 = usize::BITS - 1;
 
-    pub fn leaf_count_range() -> impl Iterator<Item = u32> {
+    pub fn leaf_count_range() -> impl Iterator<Item = usize> {
         (0..=LEAF_COUNT_BITS).map(|sh| 1 << sh)
     }
 
     // returns an iterator of (root, leaf_count)
-    pub fn root_range() -> impl Iterator<Item = (u32, u32)> {
-        (0..=ROOT_BITS).map(|e| (1 << e) - 1).map(|root| (root, root + 1))
+    pub fn root_range() -> impl Iterator<Item = (usize, usize)> {
+        (0..=ROOT_BITS as usize).map(|e| (1usize << e) - 1).map(|root| (root, root + 1))
     }
 
-    pub fn leaf_count_range_with_node_index() -> impl Iterator<Item = (u32, u32)> {
+    pub fn leaf_count_range_with_node_index() -> impl Iterator<Item = (usize, usize)> {
         leaf_count_range().flat_map(|lc| (0..=lc.saturating_sub(1) * 2).map(move |i| (lc, i)))
     }
 }
@@ -589,10 +577,9 @@ pub mod bounds {
 pub mod naive {
     use super::*;
     use std::collections::VecDeque;
-    use std::ops::Shl;
 
     #[inline(always)]
-    pub fn level_naive(node_index: u32) -> u32 {
+    pub fn level_naive(node_index: usize) -> u32 {
         if node_index & 0x01 == 0 {
             return 0;
         }
@@ -605,17 +592,17 @@ pub mod naive {
     }
 
     #[inline(always)]
-    pub fn root_naive(leaf_count: u32) -> u32 {
+    pub fn root_naive(leaf_count: usize) -> usize {
         if leaf_count == 0 {
             return 0;
         }
-        let width = node_width(leaf_count);
-        let pow2: u32 = 1 << width.ilog2();
+        let width = ops::node_width(leaf_count);
+        let pow2 = 1usize << width.ilog2();
         pow2.wrapping_sub(1)
     }
 
     #[inline(always)]
-    pub fn parent_naive(node_index: u32, leaf_count: u32) -> Option<u32> {
+    pub fn parent_naive(node_index: usize, leaf_count: usize) -> Option<usize> {
         if node_index == root_naive(leaf_count) {
             return None;
         }
@@ -626,13 +613,13 @@ pub mod naive {
     }
 
     #[inline(always)]
-    pub fn sibling_naive(node_index: u32, leaf_count: u32) -> Option<u32> {
+    pub fn sibling_naive(node_index: usize, leaf_count: usize) -> Option<usize> {
         let parent = parent_naive(node_index, leaf_count)?;
         if node_index < parent { right_naive(parent) } else { left_naive(parent) }
     }
 
     #[inline(always)]
-    pub fn left_naive(node_index: u32) -> Option<u32> {
+    pub fn left_naive(node_index: usize) -> Option<usize> {
         let k = level_naive(node_index);
         if k == 0 {
             return None;
@@ -642,7 +629,7 @@ pub mod naive {
     }
 
     #[inline(always)]
-    pub fn right_naive(node_index: u32) -> Option<u32> {
+    pub fn right_naive(node_index: usize) -> Option<usize> {
         let k = level_naive(node_index);
         if k == 0 {
             return None;
@@ -652,7 +639,7 @@ pub mod naive {
     }
 
     #[inline(always)]
-    pub fn direct_path_naive(mut node_index: u32, leaf_count: u32) -> Option<VecDeque<u32>> {
+    pub fn direct_path_naive(mut node_index: usize, leaf_count: usize) -> Option<VecDeque<usize>> {
         let root = root_naive(leaf_count);
         if node_index == root {
             return None;
@@ -670,8 +657,8 @@ pub mod naive {
         Some(ret)
     }
 
-    pub fn copath_naive(node_index: u32, leaf_count: u32) -> Option<VecDeque<u32>> {
-        if node_index == root(leaf_count) {
+    pub fn copath_naive(node_index: usize, leaf_count: usize) -> Option<VecDeque<usize>> {
+        if node_index == crate::ops::root(leaf_count) {
             return None;
         }
 
@@ -679,10 +666,10 @@ pub mod naive {
         path.insert(0, node_index);
         let _ = path.pop_back();
 
-        path.into_iter().map(|path_idx| sibling_unchecked(path_idx, leaf_count)).collect()
+        path.into_iter().map(|path_idx| ops::sibling_unchecked(path_idx, leaf_count)).collect()
     }
 
-    pub fn common_ancestor_naive(mut node_index: u32, mut other: u32) -> u32 {
+    pub fn common_ancestor_naive(mut node_index: usize, mut other: usize) -> usize {
         let self_lvl = level_naive(node_index).saturating_add(1);
         let other_lvl = level_naive(other).saturating_add(1);
         if self_lvl <= other_lvl && (node_index >> other_lvl) == (other >> other_lvl) {
@@ -698,7 +685,7 @@ pub mod naive {
             k = k.saturating_add(1);
         }
 
-        let s = 1u32.shl(k.saturating_sub(1));
+        let s = 1usize << k.saturating_sub(1);
         (node_index.overflowing_shl(k).0).saturating_add(s).saturating_sub(1)
     }
 }

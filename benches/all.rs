@@ -4,10 +4,16 @@ pub use {
     std::hint::black_box,
     treemath::bounds::*,
     treemath::naive::*,
-    treemath::*,
+    treemath::ops::*,
 };
 
 const ITER: u32 = 3;
+
+fn exhaust_iterator<T>(iter: impl Iterator<Item = T>) {
+    for v in iter {
+        black_box(v);
+    }
+}
 
 #[allow(unused)]
 pub fn level_bench(c: &mut Criterion) {
@@ -26,7 +32,7 @@ pub fn level_bench(c: &mut Criterion) {
 mod ranges {
     use super::*;
 
-    pub fn node_index(step: u32) -> impl Iterator<Item = u32> {
+    pub fn node_index(step: u32) -> impl Iterator<Item = usize> {
         let iter = (0..=NODE_INDEX_MAX).step_by(NODE_INDEX_MAX as usize / step as usize);
         iter.chain(std::iter::once(NODE_INDEX_MAX)).dedup()
     }
@@ -82,7 +88,7 @@ pub fn left_right_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("Left");
     for i in ranges::node_index(ITER) {
         group.bench_with_input(BenchmarkId::new("new", i), &i, |b, &i| {
-            b.iter_batched(|| rand::random_range(0..=i), |idx| black_box(left_unchecked(idx)), BatchSize::SmallInput)
+            b.iter_batched(|| rand::random_range(0..=i), |idx| black_box(left(idx)), BatchSize::SmallInput)
         });
         group.bench_with_input(BenchmarkId::new("naive", i), &i, |b, &i| {
             b.iter_batched(|| rand::random_range(0..=i), |idx| black_box(left_naive(idx)), BatchSize::SmallInput)
@@ -92,7 +98,7 @@ pub fn left_right_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("Right");
     for i in ranges::node_index(ITER) {
         group.bench_with_input(BenchmarkId::new("new", i), &i, |b, &i| {
-            b.iter_batched(|| rand::random_range(0..=i), |idx| black_box(right_unchecked(idx)), BatchSize::SmallInput)
+            b.iter_batched(|| rand::random_range(0..=i), |idx| black_box(right(idx)), BatchSize::SmallInput)
         });
         group.bench_with_input(BenchmarkId::new("naive", i), &i, |b, &i| {
             b.iter_batched(|| rand::random_range(0..=i), |idx| black_box(right_naive(idx)), BatchSize::SmallInput)
@@ -110,14 +116,14 @@ pub fn direct_path_bench(c: &mut Criterion) {
     for lc in leaf_count_range().step_by(LEAF_COUNT_BITS as usize / ITER as usize) {
         group.bench_with_input(BenchmarkId::new("new", lc), &lc, |b, &lc| {
             b.iter_batched(
-                || (rand::random_range(0u32..(lc * 2) - 1), lc),
-                |(idx, lc)| black_box(direct_path_unchecked(idx, lc)),
+                || (rand::random_range(0..(lc * 2) - 1), lc),
+                |(idx, lc)| black_box(direct_path_unchecked(idx, lc).map(|iter| exhaust_iterator(iter))),
                 BatchSize::SmallInput,
             )
         });
         group.bench_with_input(BenchmarkId::new("naive", lc), &lc, |b, &lc| {
             b.iter_batched(
-                || (rand::random_range(0u32..(lc * 2) - 1), lc),
+                || (rand::random_range(0..(lc * 2) - 1), lc),
                 |(idx, lc)| black_box(direct_path_naive(idx, lc)),
                 BatchSize::SmallInput,
             )
@@ -135,14 +141,14 @@ pub fn copath_bench(c: &mut Criterion) {
     for lc in leaf_count_range().step_by(LEAF_COUNT_BITS as usize / ITER as usize) {
         group.bench_with_input(BenchmarkId::new("new", lc), &lc, |b, &lc| {
             b.iter_batched(
-                || (rand::random_range(0u32..(lc * 2) - 1), lc),
-                |(idx, lc)| black_box(copath_unchecked(idx, lc)),
+                || (rand::random_range(0usize..(lc * 2) - 1), lc),
+                |(idx, lc)| black_box(copath_unchecked(idx, lc).map(|iter| exhaust_iterator(iter))),
                 BatchSize::SmallInput,
             )
         });
         group.bench_with_input(BenchmarkId::new("naive", lc), &lc, |b, &lc| {
             b.iter_batched(
-                || (rand::random_range(0u32..(lc * 2) - 1), lc),
+                || (rand::random_range(0usize..(lc * 2) - 1), lc),
                 |(idx, lc)| black_box(copath_naive(idx, lc)),
                 BatchSize::SmallInput,
             )
@@ -164,7 +170,7 @@ pub fn common_ancestor_bench(c: &mut Criterion) {
                     b &= !1;
                     (a, b)
                 },
-                |(a, b)| black_box(common_ancestor_unchecked(a, b)),
+                |(a, b)| black_box(common_ancestor(a, b)),
                 BatchSize::SmallInput,
             )
         });

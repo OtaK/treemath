@@ -3,6 +3,7 @@ name = "treemath"
 version = "0.2.1"
 edition = "2024"
 license = "Apache-2.0"
+rust-version = "1.97"
 authors = ["Beltram Maldant"]
 description = "Arithmetics for perfect binary trees"
 keywords = ["tree"]
@@ -13,9 +14,9 @@ resolver = "3"
 
 [dev-dependencies]
 treemath = { path = ".", features = ["bench"] }
-criterion = { package = "codspeed-criterion-compat", version = "2.7" }
-rand = "0.9"
-itertools = "0.14"
+criterion = { package = "codspeed-criterion-compat", version = "5" }
+rand = "0.10"
+itertools = "0.15"
 
 [[bench]]
 name = "all"
